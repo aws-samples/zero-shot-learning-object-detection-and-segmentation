@@ -8,12 +8,7 @@ This repository contains code and resources for performing zero-shot object dete
 ## AWS CloudFormation Stack Creation
 The AWS CloudFormation Stack can be created using 2 methods: (1) Using Template or (2) Using AWS CDK. Both the methods are described as follows:
 
-1. [WIP] Create Stack using AWS CloudFormation:
-    - Choose **Launch Stack** and (if prompted) log into your AWS account:
-    [![Launch Stack](assets/LaunchStack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?templateURL=https://aws-blogs-artifacts-public.s3.amazonaws.com/artifacts/ML-13353/yolov8-pytorch-cfn-template.yaml)
-    - Select a unique Stack Name, ackowledge creation of IAM resources, create the stack and wait for a few minutes for it to be successfully deployed
-
-2. Using AWS CLI:
+1. Using AWS CLI:
     - If AWS CLI is installed, use it to create the CloudFormation Stack:
     ```
     $ git clone https://github.com/aws-samples/zero-shot-learning-object-detection-and-segmentation
