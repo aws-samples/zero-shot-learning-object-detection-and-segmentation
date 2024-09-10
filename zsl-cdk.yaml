@@ -28,7 +28,7 @@ Resources:
               set -e
               # Clone CodeCommit/GitHub repository
               cd /home/ec2-user/SageMaker/
-              git clone https://github.com/aws-samples/sagemaker-generative-ai-for-product-placement-using-images.git
+              git clone https://github.com/aws-samples/zero-shot-learning-object-detection-and-segmentation.git
   zslNotebookInstance:
     Type: AWS::SageMaker::NotebookInstance
     Properties:
