@@ -1,12 +1,12 @@
-from groundingdino.util.inference import load_model, predict, annotate
-from groundingdino.util import box_ops
 from PIL import Image, ImageEnhance
-from typing import Tuple
+from typing import Tuple, List
 from diffusers import StableDiffusionInpaintPipeline
 from transformers import SamModel, SamProcessor
 from perceiver.model.vision import optical_flow  # noqa: F401
-from transformers import pipeline
-import groundingdino.datasets.transforms as T
+from transformers import pipeline, AutoProcessor, AutoModelForZeroShotObjectDetection
+from torchvision.ops import box_convert
+import supervision as sv
+import transforms as T
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -14,6 +14,45 @@ import cv2
 import requests
 import re
 import copy
+import random
+
+
+def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> np.ndarray:
+    """    
+    This function annotates an image with bounding boxes and labels.
+
+    Parameters:
+    image_source (np.ndarray): The source image to be annotated.
+    boxes (torch.Tensor): A tensor containing bounding box coordinates.
+    logits (torch.Tensor): A tensor containing confidence scores for each bounding box.
+    phrases (List[str]): A list of labels for each bounding box.
+
+    Returns:
+    np.ndarray: The annotated image.
+    """
+    h, w, _ = image_source.shape
+    # boxes = boxes[:,[0,2,1,3]]
+    boxes = boxes * torch.Tensor([w, h, w, h])
+    xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
+    # xyxy = box_convert(boxes=boxes, in_fmt="xyxy", out_fmt="xyxy").numpy()
+    detections = sv.Detections(xyxy=xyxy)
+
+    labels = [
+        f"{phrase} {logit:.2f}"
+        for phrase, logit
+        in zip(phrases, logits)
+    ]
+
+    bbox_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX)
+    label_annotator = sv.LabelAnnotator(color_lookup=sv.ColorLookup.INDEX)
+    annotated_frame = cv2.cvtColor(image_source, cv2.COLOR_RGB2BGR)
+    annotated_frame = bbox_annotator.annotate(scene=annotated_frame, detections=detections)
+    annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+    return annotated_frame
+
+def box_cxcywh_to_xyxy(boxes, in_fmt="cxcywh", out_fmt="xyxy"):
+    xyxy = box_convert(boxes=boxes, in_fmt=in_fmt, out_fmt=out_fmt)
+    return xyxy
 
 
 class Prompts:
@@ -23,12 +62,23 @@ class Prompts:
         self.replace_prompt = replace_prompt
         self.negative_prompt = negative_prompt
         self.search_prompt = search_prompt
+        
+        if not self.search_prompt.endswith('.'):
+            self.search_prompt += '.'
+            
+        if self.replace_prompt is not None and (not self.replace_prompt.endswith('.')):
+            self.replace_prompt += '.'
+                                                
 
 
 class GenAiModels:
     def __init__(self) -> None:
-        gd_model = load_model("utils.py", "weights/groundingdino_swinb_cogcoor.pth")
+        # gd_model = load_model("utils.py", "weights/groundingdino_swinb_cogcoor.pth")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
+        model_id = "IDEA-Research/grounding-dino-base"
+        processor = AutoProcessor.from_pretrained(model_id)
+        gd_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device)        
         sam_model = SamModel.from_pretrained("facebook/sam-vit-huge").to(device)
         processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
         sd_pipe = StableDiffusionInpaintPipeline.from_pretrained(
@@ -39,6 +89,7 @@ class GenAiModels:
             "optical-flow", model="krasserm/perceiver-io-optical-flow", device="cuda:0"
         )
         self.processor = processor
+        self.processor_dino = AutoProcessor.from_pretrained(model_id)
         self.sam_model = sam_model
         self.gd_model = gd_model
         self.sd_pipe = sd_pipe
@@ -46,19 +97,43 @@ class GenAiModels:
     def detect(
         self, image, tensor_image, text_prompt, box_threshold=0.3, text_threshold=0.3
     ):
-        boxes, logits, phrases = predict(
-            model=self.gd_model,
-            image=tensor_image,
-            caption=text_prompt,
+        if isinstance(image, np.ndarray):
+            image_pil = Image.fromarray(image)
+
+        inputs = self.processor_dino(images=image_pil, text=text_prompt, return_tensors="pt").to(self.device)
+
+        with torch.no_grad():
+            outputs = self.gd_model(**inputs)
+
+        results = self.processor_dino.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
+            target_sizes=[image_pil.size[::-1]]
         )
-        # print(boxes, logits)
+        # boxes, logits, phrases = predict(
+        #     model=self.gd_model,
+        #     image=tensor_image,
+        #     caption=text_prompt,
+        #     box_threshold=box_threshold,
+        #     text_threshold=text_threshold,
+        # )
+        logits = results[0]["scores"].cpu()
+        phrases = results[0]["labels"]
+        boxes = results[0]["boxes"].cpu()        
+        h, w, _ = image.shape
+        boxes = boxes / torch.Tensor([w, h, w, h])
+        boxes = box_convert(boxes=boxes, in_fmt="xyxy", out_fmt="cxcywh")
+
         boxes_list = [boxes[b] for b in range(len(phrases)) if phrases[b] != ""]
         if len(boxes_list) == 0:
             return image, [[]]
         boxes = torch.stack(boxes_list)
         phrases = [phrases[b] for b in range(len(phrases)) if phrases[b] != ""]
+        logits = [logits[b] for b in range(len(phrases)) if phrases[b] != ""]
+        logits = torch.stack(logits)
+
         annotated_frame = annotate(
             image_source=image, boxes=boxes, logits=logits, phrases=phrases
         )
@@ -99,7 +174,7 @@ class GenAiModels:
             array_image,
             tensor_image,
             prompt_obj.search_prompt,
-            box_threshold=0.3,
+            box_threshold=0.1,
             text_threshold=0.3,
         )
 
@@ -107,12 +182,12 @@ class GenAiModels:
         if len(detected_boxes[0]) == 0:
             return image, image
         boxes = [
-            (box_ops.box_cxcywh_to_xyxy(detected_boxes) * torch.Tensor([W, H, W, H]))
+            (box_cxcywh_to_xyxy(detected_boxes) * torch.Tensor([W, H, W, H]))
             .cpu()
             .tolist()
         ]
         if len(boxes[0]) == 0:
-            return image, image
+            return image, image        
         inputs = self.processor(raw_image, input_boxes=boxes, return_tensors="pt").to(
             device
         )
@@ -182,7 +257,7 @@ class GenAiModels:
 
         H, W, _ = array_image.shape
         boxes = [
-            (box_ops.box_cxcywh_to_xyxy(detected_boxes) * torch.Tensor([W, H, W, H]))
+            (box_cxcywh_to_xyxy(detected_boxes) * torch.Tensor([W, H, W, H]))
             .cpu()
             .tolist()
         ]
@@ -420,20 +495,20 @@ def show_masks_on_image(raw_image, masks, scores):
     plt.show()
 
 
-def load_image(image_url: str, q) -> Tuple[np.array, torch.Tensor]:
-    transform = T.Compose(
-        [
-            T.RandomResize([800], max_size=1333),
-            T.ToTensor(),
-            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ]
-    )
-    image_source = Image.open(requests.get(image_url, stream=True).raw).convert("RGB")
-    H, W = image_source.size
-    image_source = image_source.resize((int((1 - q) * H), int((1 - q) * W)))
-    image = np.asarray(image_source)
-    image_transformed, _ = transform(image_source, None)
-    return image_source, image, image_transformed
+# def load_image(image_url: str, q) -> Tuple[np.array, torch.Tensor]:
+#     transform = T.Compose(
+#         [
+#             T.RandomResize([800], max_size=1333),
+#             T.ToTensor(),
+#             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+#         ]
+#     )
+#     image_source = Image.open(requests.get(image_url, stream=True).raw).convert("RGB")
+#     H, W = image_source.size
+#     image_source = image_source.resize((int((1 - q) * H), int((1 - q) * W)))
+#     image = np.asarray(image_source)
+#     image_transformed, _ = transform(image_source, None)
+#     return image_source, image, image_transformed
 
 
 def dilate_mask(mask, dilate_factor):
