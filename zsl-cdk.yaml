@@ -29,6 +29,7 @@ Resources:
               # Clone CodeCommit/GitHub repository
               cd /home/ec2-user/SageMaker/
               git clone https://github.com/aws-samples/zero-shot-learning-object-detection-and-segmentation.git
+              chown -R ec2-user:ec2-user /home/ec2-user/SageMaker/zero-shot-learning-object-detection-and-segmentation
   zslNotebookInstance:
     Type: AWS::SageMaker::NotebookInstance
     Properties:
