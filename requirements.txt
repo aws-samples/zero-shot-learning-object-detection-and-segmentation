@@ -2,10 +2,11 @@ torch<2.1
 torchvision
 torchaudio
 accelerate==0.22 
-transformers>=4.42.0
+transformers==4.44.2
 diffusers==0.20.0 
 Pillow>=10.0.0
 perceiver-io[vision]
 packaging>24.0
 cchardet==2.2.0a2
 supervision
+huggingface-hub==0.24.5
