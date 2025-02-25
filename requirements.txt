@@ -2,7 +2,7 @@ torch<2.1
 torchvision
 torchaudio
 accelerate==0.22 
-transformers==4.44.2
+transformers==4.48.0
 diffusers==0.20.0 
 Pillow>=10.0.0
 perceiver-io[vision]
